@@ -1,19 +1,21 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
+  AlertTriangle,
   ArrowRight,
   Brain,
   CheckCircle2,
-  Globe,
+  FileQuestion,
   Link as LinkIcon,
   Loader2,
   Paperclip,
+  RefreshCw,
   SlidersHorizontal,
   Sparkles,
 } from 'lucide-react'
 import { PostComposer } from '../components/checker/PostComposer'
 import { ResultCard } from '../components/checker/ResultCard'
-import { checkerService } from '../services/checkerService'
+import { checkerService, CheckerError, type CheckerErrorType } from '../services/checkerService'
 import type { RumourCheck } from '../types'
 import { cn } from '../utils/cn'
 
@@ -22,48 +24,43 @@ interface StageItem {
   label: string
 }
 
+interface CheckerErrorState {
+  type: CheckerErrorType
+  message: string
+}
+
 export function CheckerHomePage() {
   const navigate = useNavigate()
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [activeStageIndex, setActiveStageIndex] = useState(0)
   const [activeStageLabel, setActiveStageLabel] = useState('Understanding the claim')
-  const [usedWebSearch, setUsedWebSearch] = useState(false)
   const [liveThinking, setLiveThinking] = useState('')
   const [check, setCheck] = useState<RumourCheck | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [errorState, setErrorState] = useState<CheckerErrorState | null>(null)
   const [showOptions, setShowOptions] = useState(false)
   const [composer, setComposer] = useState(false)
 
   const steps: StageItem[] = [
     { id: 'understanding', label: 'Understanding the claim & context' },
     { id: 'signals', label: 'Reviewing verification signals & risk triage' },
-    {
-      id: 'evidence',
-      label: usedWebSearch
-        ? 'Checking current information & live web sources'
-        : 'Analyzing available evidence & knowledge',
-    },
-    { id: 'reasoning', label: 'Cross-checking evidence & evaluating certainty' },
-    { id: 'assessment', label: 'Preparing assessment' },
+    { id: 'evidence', label: 'Cross-referencing verified records & known patterns' },
+    { id: 'reasoning', label: 'Running AI reasoning & evaluating certainty' },
+    { id: 'assessment', label: 'Synthesizing structured assessment' },
   ]
 
   async function runCheck(text: string) {
     const query = text.trim()
     if (query.length < 8) return
-    setError(null)
+    setErrorState(null)
     setBusy(true)
     setCheck(null)
     setActiveStageIndex(0)
     setActiveStageLabel('Understanding the claim & context')
-    setUsedWebSearch(false)
     setLiveThinking('')
 
     try {
       const result = await checkerService.check(query, (progress) => {
-        if (progress.usedWebSearch) {
-          setUsedWebSearch(true)
-        }
         if (progress.accumulatedThinking) {
           setLiveThinking(progress.accumulatedThinking)
         }
@@ -73,7 +70,7 @@ export function CheckerHomePage() {
         } else if (progress.stage === 'signals') {
           setActiveStageIndex(1)
           setActiveStageLabel(progress.message)
-        } else if (progress.stage === 'evidence' || progress.stage === 'web_search') {
+        } else if (progress.stage === 'evidence') {
           setActiveStageIndex(2)
           setActiveStageLabel(progress.message)
         } else if (progress.stage === 'reasoning') {
@@ -86,8 +83,14 @@ export function CheckerHomePage() {
       })
 
       setCheck(result)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to check that rumour.')
+      setErrorState(null)
+    } catch (err: any) {
+      setCheck(null)
+      const errType: CheckerErrorType = err instanceof CheckerError ? err.errorType : 'UNAVAILABLE'
+      setErrorState({
+        type: errType,
+        message: err?.message || 'NO CAP AI is currently unavailable.',
+      })
     } finally {
       setBusy(false)
     }
@@ -188,15 +191,6 @@ export function CheckerHomePage() {
               </div>
             </div>
 
-            {error && (
-              <div
-                className="mt-3 rounded-xl border border-[#EF3340]/30 bg-[#FDE7E9] px-3.5 py-2 text-xs font-semibold text-[#EF3340]"
-                role="alert"
-              >
-                {error}
-              </div>
-            )}
-
             {/* Bottom Bar: Action buttons */}
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[#F3F4F6] pt-3.5">
               {/* Left utility tools */}
@@ -231,7 +225,10 @@ export function CheckerHomePage() {
                 {draft && (
                   <button
                     type="button"
-                    onClick={() => setDraft('')}
+                    onClick={() => {
+                      setDraft('')
+                      setErrorState(null)
+                    }}
                     className="px-2 py-1 text-xs text-[#9CA3AF] hover:text-[#EF3340] transition-colors cursor-pointer"
                   >
                     Clear
@@ -271,9 +268,9 @@ export function CheckerHomePage() {
             {/* Optional Advanced Options Drawer */}
             {showOptions && (
               <div className="mt-3 rounded-xl border border-[#EAEAEA] bg-[#FAFAFA] p-3 text-xs text-[#667085] animate-fade-in flex flex-wrap items-center justify-between gap-2">
-                <span>Intake: <strong>Text & Signal Analysis</strong></span>
+                <span>Intake: <strong>Text &amp; Signal Analysis</strong></span>
                 <span>Model Engine: <strong>OpenRouter Streaming AI</strong></span>
-                <span>Freshness: <strong>Live Web Verification</strong></span>
+                <span>Verification: <strong>Primary &amp; Backup Fallback</strong></span>
               </div>
             )}
           </form>
@@ -312,7 +309,7 @@ export function CheckerHomePage() {
             {/* Lady Justice (Neethi Devathai) Statue */}
             <div
               className="relative z-10 w-full h-full flex items-center justify-center animate-subtle-weigh cursor-pointer"
-              title="NO CAP — Impartial Evidence & Truth Verification"
+              title="NO CAP — Impartial Evidence &amp; Truth Verification"
             >
               <img
                 src="/justice-statue.png"
@@ -337,12 +334,6 @@ export function CheckerHomePage() {
                 <p className="text-[11px] text-[#667085] font-normal mt-0.5">{activeStageLabel}</p>
               </div>
             </div>
-            {usedWebSearch && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-[#ECFDF5] px-2.5 py-0.5 text-[10px] font-bold text-[#059669]">
-                <Globe className="h-3 w-3 animate-spin" />
-                Live Web Search Active
-              </span>
-            )}
           </div>
 
           <div className="mt-4 flex flex-col gap-2.5">
@@ -389,8 +380,114 @@ export function CheckerHomePage() {
         </div>
       )}
 
-      {/* In-Place AI Assessment Result Card Reveal */}
-      {check && !busy && (
+      {/* STATE 2: AI UNAVAILABLE (Clean, honest state without fabricated results) */}
+      {errorState && errorState.type !== 'PARSE_ERROR' && !busy && (
+        <div className="mt-8 max-w-3xl mx-auto w-full animate-fade-in">
+          <div className="rounded-[26px] border border-amber-300/70 bg-white p-6 sm:p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)]">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#F0F0F0] pb-4">
+              <div className="flex items-center gap-2">
+                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-amber-100 text-amber-600">
+                  <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+                </span>
+                <span className="font-mono text-xs font-bold tracking-[0.22em] text-[#111111] uppercase">
+                  AI SERVICE STATUS
+                </span>
+              </div>
+              <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-amber-700">
+                AI Unavailable
+              </span>
+            </div>
+
+            <div className="mt-6">
+              <h2 className="text-xl sm:text-2xl font-black text-[#111111] tracking-tight">
+                Live AI Verification Unavailable
+              </h2>
+              <p className="mt-2 text-sm text-[#4B5563] leading-relaxed">
+                {errorState.message}
+              </p>
+              <div className="mt-4 rounded-xl border border-[#EAEAEA] bg-[#FAFAFA] p-4 text-xs text-[#667085] leading-relaxed">
+                <strong>Honest Misinformation Triage:</strong> NO CAP never fabricates a canned or synthetic verification score when the AI model cannot be reached. You can retry the automated check, or post the claim to the community for human verification.
+              </div>
+            </div>
+
+            <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-[#F0F0F0] pt-5">
+              <button
+                type="button"
+                onClick={() => void runCheck(draft)}
+                className="inline-flex items-center gap-2 rounded-full bg-[#EF3340] px-6 py-2.5 text-xs font-bold text-white shadow-xs transition-all duration-150 hover:bg-[#D92D3A] active:scale-98 cursor-pointer"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                <span>Retry AI Check</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setComposer(true)}
+                className="inline-flex items-center gap-2 rounded-full border border-[#EAEAEA] bg-[#FAFAFA] px-5 py-2.5 text-xs font-bold text-[#111111] hover:bg-[#F0F0F0] transition-colors cursor-pointer"
+              >
+                <span>Post to Community for Human Review</span>
+                <ArrowRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* STATE 3: AI RESPONSE UNPARSEABLE (Clean, honest state without fabricated results) */}
+      {errorState && errorState.type === 'PARSE_ERROR' && !busy && (
+        <div className="mt-8 max-w-3xl mx-auto w-full animate-fade-in">
+          <div className="rounded-[26px] border border-rose-300/70 bg-white p-6 sm:p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)]">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#F0F0F0] pb-4">
+              <div className="flex items-center gap-2">
+                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-rose-100 text-rose-600">
+                  <FileQuestion className="h-4 w-4" aria-hidden="true" />
+                </span>
+                <span className="font-mono text-xs font-bold tracking-[0.22em] text-[#111111] uppercase">
+                  UNPARSEABLE RESPONSE
+                </span>
+              </div>
+              <span className="rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-rose-700">
+                Response Formatting Error
+              </span>
+            </div>
+
+            <div className="mt-6">
+              <h2 className="text-xl sm:text-2xl font-black text-[#111111] tracking-tight">
+                AI Output Could Not Be Structured
+              </h2>
+              <p className="mt-2 text-sm text-[#4B5563] leading-relaxed">
+                {errorState.message}
+              </p>
+              <div className="mt-4 rounded-xl border border-[#EAEAEA] bg-[#FAFAFA] p-4 text-xs text-[#667085] leading-relaxed">
+                <strong>Integrity Guarantee:</strong> The model responded, but its output could not be strictly validated as valid verification JSON. NO CAP does not synthesize mock conclusions when formatting fails.
+              </div>
+            </div>
+
+            <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-[#F0F0F0] pt-5">
+              <button
+                type="button"
+                onClick={() => void runCheck(draft)}
+                className="inline-flex items-center gap-2 rounded-full bg-[#EF3340] px-6 py-2.5 text-xs font-bold text-white shadow-xs transition-all duration-150 hover:bg-[#D92D3A] active:scale-98 cursor-pointer"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                <span>Retry Check</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setComposer(true)}
+                className="inline-flex items-center gap-2 rounded-full border border-[#EAEAEA] bg-[#FAFAFA] px-5 py-2.5 text-xs font-bold text-[#111111] hover:bg-[#F0F0F0] transition-colors cursor-pointer"
+              >
+                <span>Post to Community for Human Review</span>
+                <ArrowRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* STATE 1: AI SUCCESSFULLY RESPONDED (In-Place AI Assessment Result Card Reveal) */}
+      {check && !busy && !errorState && (
         <div className="mt-8 max-w-3xl mx-auto w-full animate-fade-in">
           <ResultCard
             assessment={check.result}
@@ -402,11 +499,22 @@ export function CheckerHomePage() {
       )}
 
       {/* Post to Community Modal */}
-      {composer && check && (
+      {composer && (
         <PostComposer
-          original={check.originalText}
-          assessment={check.result}
-          checkId={check.id}
+          original={check?.originalText || draft}
+          assessment={
+            check?.result || {
+              label: 'INCONCLUSIVE',
+              verification: 'UNDER VERIFICATION',
+              found: false,
+              aiConfidence: 50,
+              why: 'Submitted for community review and factual investigation.',
+              matchedClaimId: null,
+              similarityPercent: null,
+              evidenceNote: 'Community triage pending.',
+            }
+          }
+          checkId={check?.id}
           onClose={() => setComposer(false)}
           onPublished={(claimId) => {
             setComposer(false)
