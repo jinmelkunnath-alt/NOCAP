@@ -1,10 +1,19 @@
 /**
  * NO CAP OpenRouter AI Verification Service
  * Server-Side Only: Private credentials never reach the browser.
- * Uses official @openrouter/sdk with streaming, reasoning, web search plugin, and fast fallback.
+ * Uses official @openrouter/sdk with streaming, dynamic model selection, and transient failover.
  */
 
 import { OpenRouter } from '@openrouter/sdk'
+
+export class AiParseError extends Error {
+  rawOutput?: string
+  constructor(message: string, rawOutput?: string) {
+    super(message)
+    this.name = 'AiParseError'
+    this.rawOutput = rawOutput
+  }
+}
 
 export interface StructuredVerificationResult {
   classification: 'REAL' | 'FAKE' | 'INCONCLUSIVE'
@@ -67,19 +76,26 @@ export const AI_CONFIG = {
   get fastModel() {
     return (process.env.OPENROUTER_FAST_MODEL || 'nvidia/nemotron-3.5-lightning:free').trim()
   },
-  get webSearchEnabled() {
-    return process.env.OPENROUTER_WEB_SEARCH_ENABLED !== 'false'
-  },
-  get maxWebResults() {
-    const parsed = Number(process.env.OPENROUTER_WEB_SEARCH_MAX_RESULTS)
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 5
-  },
   get siteUrl() {
     return (process.env.OPENROUTER_SITE_URL || '').trim()
   },
   get siteName() {
     return (process.env.OPENROUTER_SITE_NAME || 'NO CAP').trim()
   },
+}
+
+export function isTransientError(err: any): boolean {
+  if (!err) return false
+  const status = err?.status || err?.statusCode || err?.response?.status || err?.cause?.status
+  if (typeof status === 'number') {
+    if (status === 429 || (status >= 500 && status <= 599)) return true
+    if (status >= 400 && status < 500) return false // 400, 401, 403, 404, etc.
+  }
+  const msg = (err?.message || String(err)).toLowerCase()
+  if (msg.includes('429') || msg.includes('rate limit') || msg.includes('quota') || msg.includes('busy')) return true
+  if (msg.includes('500') || msg.includes('502') || msg.includes('503') || msg.includes('504')) return true
+  if (msg.includes('timeout') || msg.includes('timed out') || msg.includes('econnreset') || msg.includes('network') || msg.includes('fetch failed')) return true
+  return false
 }
 
 const SYSTEM_PROMPT = `You are the primary AI verification reasoning engine for NO CAP.
@@ -102,60 +118,34 @@ For health and financial claims:
 Your job:
 - Analyze the factual content of the user's claim.
 - Determine what the claim is asserting.
-- Evaluate available evidence and contradictions.
+- Evaluate available evidence, risk signals, and contradictions.
 - Classify strictly as: REAL, FAKE, or INCONCLUSIVE.
 
 CRITICAL RULES:
-1. AI confidence is NOT a mathematical probability that the claim is true. It is a calibration of available verifiable signal density.
+1. AI confidence is NOT a mathematical probability that the claim is true. It is a calibrated index (0-100) of verifiable evidentiary support.
 2. If the evidence is insufficient, conflicting, or uncorroborated, return INCONCLUSIVE. Never force a REAL or FAKE conclusion.
-3. Never fabricate evidence, sources, URLs, statistics, quotes, official statements, or search results.
-4. Human verification remains the official authority. Community votes are sentiment only.
-5. If live web search was used, cite real sources returned. If not used, do not fabricate web sources.
+3. Never fabricate evidence, sources, URLs, statistics, quotes, official statements, or citations.
+4. Human verification remains the official authority. AI output is preliminary and advisory only.
+5. Provide concise, rigorous, factual explanations without bias.
 
 You MUST respond strictly in valid JSON format matching this schema without any markdown commentary:
 {
   "classification": "REAL" | "FAKE" | "INCONCLUSIVE",
   "confidence": <number between 0 and 100>,
-  "verificationStatus": "VERIFIED" | "UNDER_VERIFICATION" | "UNVERIFIED",
+  "verificationStatus": "VERIFIED" | "UNDER_VERIFICATION",
   "summary": "<short 1-2 sentence core finding>",
   "reason": "<short 2-3 sentence explanation of the reasoning and evidence>",
   "evidence": ["<point of supporting or context evidence>"],
   "counterEvidence": ["<point of counter evidence>"],
   "uncertainties": ["<specific missing context or unverifiable element>"],
-  "sources": [
-    { "title": "<source title>", "url": "<source url>", "domain": "<domain.com>", "snippet": "<snippet>" }
-  ],
   "recommendedAction": "<advisory action>",
-  "needsHumanReview": <boolean>,
-  "usedWebSearch": <boolean>
+  "needsHumanReview": <boolean>
 }`
-
-/**
- * Heuristic to detect if fresh or time-sensitive internet data is required
- */
-export function requiresWebSearch(text: string, category?: string | null): boolean {
-  if (!text) return false
-  const lower = text.toLowerCase()
-
-  const timePatterns = [
-    /\b(today|yesterday|tomorrow|this week|this month|recent|recently|just announced|just happened)\b/i,
-    /\b(breaking|current price|new policy|latest update|live now|newly released|leaked today)\b/i,
-    /\b(announced|signed|passed law|death|passed away|elected|resigned|arrested|fired)\b/i,
-    /\b(2025|2026)\b/i,
-    /\b(stock price|market crash|ceo announcement|earthquake|storm|outage|shut down)\b/i,
-  ]
-
-  const matchesTime = timePatterns.some((pattern) => pattern.test(lower))
-  const isNewsCategory =
-    category === 'Politics' || category === 'Economy' || category === 'Disaster' || category === 'Official'
-
-  return matchesTime || isNewsCategory
-}
 
 /**
  * Builds user prompt containing deterministic signals and contextual data
  */
-function buildUserPrompt(payload: CheckClaimPayload, shouldSearch: boolean): string {
+function buildUserPrompt(payload: CheckClaimPayload): string {
   const parts: string[] = []
 
   parts.push(`USER CLAIM TO VERIFY:\n"${payload.claim.trim()}"`)
@@ -181,13 +171,7 @@ function buildUserPrompt(payload: CheckClaimPayload, shouldSearch: boolean): str
     }
   }
 
-  if (shouldSearch) {
-    parts.push('Note: Fresh web search is enabled for this query to verify current information.')
-  } else {
-    parts.push('Note: General knowledge query; fresh web search is not required.')
-  }
-
-  parts.push('Please return the complete structured verification assessment JSON.')
+  parts.push('Please evaluate this claim with strict factual neutrality and return the complete structured verification assessment JSON.')
 
   return parts.join('\n\n')
 }
@@ -198,15 +182,14 @@ function buildUserPrompt(payload: CheckClaimPayload, shouldSearch: boolean): str
 export function parseAndValidateResponse(
   rawText: string,
   modelName: string,
-  usedWebSearch: boolean,
   matchedClaim?: CheckClaimPayload['matchedClaim'],
   meta?: { reasoningTokens?: number; totalTokens?: number; durationMs?: number; reasoningText?: string },
 ): StructuredVerificationResult {
   let cleaned = rawText.trim()
 
   // Remove markdown code fences if present
-  if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '')
+  if (cleaned.includes('```')) {
+    cleaned = cleaned.replace(/```(?:json)?\s*([\s\S]*?)\s*```/gi, '$1').trim()
   }
 
   // Extract JSON object if surrounded by preamble/postscript
@@ -219,26 +202,13 @@ export function parseAndValidateResponse(
   let parsed: any
   try {
     parsed = JSON.parse(cleaned)
-  } catch {
-    console.warn('Failed to parse AI JSON output directly. Fallback recovery triggered. Snippet:', rawText.slice(0, 150))
-    return {
-      classification: 'INCONCLUSIVE',
-      confidence: 45,
-      verificationStatus: 'UNDER_VERIFICATION',
-      summary: 'NO CAP could not conclusively establish this claim from the available evidence.',
-      reason: 'The automated analysis was inconclusive or returned unformatted evidence. Human fact-checking review is recommended.',
-      evidence: [],
-      counterEvidence: [],
-      uncertainties: ['Insufficient formatted data returned from verification engine.'],
-      sources: [],
-      recommendedAction: 'Exercise caution and verify with official primary sources.',
-      needsHumanReview: true,
-      usedWebSearch,
-      meta: {
-        modelUsed: modelName,
-        ...meta,
-      },
-    }
+  } catch (err) {
+    console.warn('Failed to parse AI JSON output. Snippet:', rawText.slice(0, 150))
+    throw new AiParseError('Model output could not be parsed as structured verification JSON.', rawText)
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    throw new AiParseError('Model output did not contain a valid JSON object.', rawText)
   }
 
   // Validate classification
@@ -253,11 +223,19 @@ export function parseAndValidateResponse(
 
   // If matchedClaim is an existing human verified record with high confidence, respect human priority
   let verificationStatus: 'VERIFIED' | 'UNDER_VERIFICATION' | 'UNVERIFIED' = 'UNDER_VERIFICATION'
-  if (matchedClaim && matchedClaim.similarity >= 80 && (matchedClaim.verdict === 'Verified True' || matchedClaim.verdict === 'Verified False')) {
+  if (
+    matchedClaim &&
+    matchedClaim.similarity >= 80 &&
+    (matchedClaim.verdict === 'Verified True' || matchedClaim.verdict === 'Verified False')
+  ) {
     verificationStatus = 'VERIFIED'
     if (matchedClaim.verdict === 'Verified True') classification = 'REAL'
     if (matchedClaim.verdict === 'Verified False') classification = 'FAKE'
-  } else if (parsed.verificationStatus === 'VERIFIED' || parsed.verificationStatus === 'UNDER_VERIFICATION' || parsed.verificationStatus === 'UNVERIFIED') {
+  } else if (
+    parsed.verificationStatus === 'VERIFIED' ||
+    parsed.verificationStatus === 'UNDER_VERIFICATION' ||
+    parsed.verificationStatus === 'UNVERIFIED'
+  ) {
     verificationStatus = parsed.verificationStatus
   }
 
@@ -265,7 +243,7 @@ export function parseAndValidateResponse(
   let confidence = typeof parsed.confidence === 'number' ? Math.round(parsed.confidence) : 50
   confidence = Math.max(10, Math.min(98, confidence))
 
-  // Validate sources array
+  // Validate sources array if provided
   const sources: StructuredVerificationResult['sources'] = []
   if (Array.isArray(parsed.sources)) {
     for (const src of parsed.sources) {
@@ -286,21 +264,24 @@ export function parseAndValidateResponse(
     }
   }
 
-  const summary = typeof parsed.summary === 'string' && parsed.summary.trim()
-    ? parsed.summary.trim()
-    : 'NO CAP analyzed the claim and available evidence signals.'
+  const summary =
+    typeof parsed.summary === 'string' && parsed.summary.trim()
+      ? parsed.summary.trim()
+      : 'NO CAP analyzed the claim and available evidence signals.'
 
-  const reason = typeof parsed.reason === 'string' && parsed.reason.trim()
-    ? parsed.reason.trim()
-    : 'Available official sources and evidence were cross-checked to provide this advisory assessment.'
+  const reason =
+    typeof parsed.reason === 'string' && parsed.reason.trim()
+      ? parsed.reason.trim()
+      : 'Evidence signals and factual assertions were evaluated to provide this advisory assessment.'
 
-  const reasoningText = typeof meta?.reasoningText === 'string' && meta.reasoningText.trim()
-    ? meta.reasoningText.trim()
-    : typeof parsed.reasoning === 'string' && parsed.reasoning.trim()
-      ? parsed.reasoning.trim()
-      : typeof parsed.thinking === 'string' && parsed.thinking.trim()
-        ? parsed.thinking.trim()
-        : reason
+  const reasoningText =
+    typeof meta?.reasoningText === 'string' && meta.reasoningText.trim()
+      ? meta.reasoningText.trim()
+      : typeof parsed.reasoning === 'string' && parsed.reasoning.trim()
+        ? parsed.reasoning.trim()
+        : typeof parsed.thinking === 'string' && parsed.thinking.trim()
+          ? parsed.thinking.trim()
+          : reason
 
   return {
     classification,
@@ -309,15 +290,22 @@ export function parseAndValidateResponse(
     summary,
     reason,
     reasoningText,
-    evidence: Array.isArray(parsed.evidence) ? parsed.evidence.filter((e: any) => typeof e === 'string' && e.trim()) : [],
-    counterEvidence: Array.isArray(parsed.counterEvidence) ? parsed.counterEvidence.filter((e: any) => typeof e === 'string' && e.trim()) : [],
-    uncertainties: Array.isArray(parsed.uncertainties) ? parsed.uncertainties.filter((u: any) => typeof u === 'string' && u.trim()) : [],
+    evidence: Array.isArray(parsed.evidence)
+      ? parsed.evidence.filter((e: any) => typeof e === 'string' && e.trim())
+      : [],
+    counterEvidence: Array.isArray(parsed.counterEvidence)
+      ? parsed.counterEvidence.filter((e: any) => typeof e === 'string' && e.trim())
+      : [],
+    uncertainties: Array.isArray(parsed.uncertainties)
+      ? parsed.uncertainties.filter((u: any) => typeof u === 'string' && u.trim())
+      : [],
     sources,
-    recommendedAction: typeof parsed.recommendedAction === 'string' && parsed.recommendedAction.trim()
-      ? parsed.recommendedAction.trim()
-      : 'Verify with primary sources before sharing.',
-    needsHumanReview: Boolean(parsed.needsHumanReview ?? (classification === 'INCONCLUSIVE')),
-    usedWebSearch: Boolean(parsed.usedWebSearch ?? (usedWebSearch && sources.length > 0)),
+    recommendedAction:
+      typeof parsed.recommendedAction === 'string' && parsed.recommendedAction.trim()
+        ? parsed.recommendedAction.trim()
+        : 'Verify with primary sources before sharing.',
+    needsHumanReview: Boolean(parsed.needsHumanReview ?? classification === 'INCONCLUSIVE'),
+    usedWebSearch: false,
     meta: {
       modelUsed: modelName,
       reasoningText,
@@ -327,9 +315,8 @@ export function parseAndValidateResponse(
 }
 
 export type StreamProgressCallback = (event: {
-  stage: 'understanding' | 'signals' | 'evidence' | 'web_search' | 'reasoning' | 'assessment'
+  stage: 'understanding' | 'signals' | 'evidence' | 'reasoning' | 'assessment'
   message: string
-  usedWebSearch?: boolean
   thinkingChunk?: string
   accumulatedThinking?: string
 }) => void
@@ -341,7 +328,7 @@ interface ModelCandidate {
 }
 
 /**
- * Execute OpenRouter claim check with streaming, model fallback, and web plugin
+ * Execute OpenRouter claim check with streaming and transient fallback
  */
 export async function runOpenRouterCheck(
   payload: CheckClaimPayload,
@@ -358,28 +345,18 @@ export async function runOpenRouterCheck(
   // 2. Stage: Signals
   onProgress?.({
     stage: 'signals',
-    message: 'Reviewing verification signals and risk triage',
+    message: 'Evaluating deterministic risk triage and signals',
   })
 
-  const shouldSearch = AI_CONFIG.webSearchEnabled && requiresWebSearch(payload.claim, payload.category)
-  
-  if (shouldSearch) {
-    onProgress?.({
-      stage: 'web_search',
-      message: 'Checking current information and live web sources',
-      usedWebSearch: true,
-    })
-  } else {
-    onProgress?.({
-      stage: 'evidence',
-      message: 'Analyzing available stored evidence and knowledge',
-      usedWebSearch: false,
-    })
-  }
+  // 3. Stage: Evidence
+  onProgress?.({
+    stage: 'evidence',
+    message: 'Cross-referencing verified records and known patterns',
+  })
 
-  const userPrompt = buildUserPrompt(payload, shouldSearch)
+  const userPrompt = buildUserPrompt(payload)
 
-  // Configure attempts: Primary (Nemotron Super) -> Fast/Backup (Nemotron Lightning)
+  // Configure attempts: Primary (OPENROUTER_MAIN_MODEL) -> Backup (OPENROUTER_FAST_MODEL)
   const candidates: ModelCandidate[] = []
 
   const mainKey = AI_CONFIG.mainApiKey
@@ -423,19 +400,10 @@ export async function runOpenRouterCheck(
         stage: 'reasoning',
         message: candidate.isBackup
           ? `Evaluating with backup model (${candidate.model})`
-          : 'Cross-checking evidence & evaluating certainty',
+          : 'Evaluating evidence & logical certainty',
       })
 
-      // Build chat plugins
-      const plugins: any[] = []
-      if (shouldSearch) {
-        plugins.push({
-          id: 'web',
-          maxResults: AI_CONFIG.maxWebResults,
-        })
-      }
-
-      // Configure OpenRouter chat request
+      // Standard chat request configuration compatible with OpenRouter free models
       const chatRequest: any = {
         model: candidate.model,
         messages: [
@@ -444,14 +412,6 @@ export async function runOpenRouterCheck(
         ],
         stream: true,
         temperature: 0.15,
-        responseFormat: { type: 'json_object' },
-        reasoning: {
-          effort: 'medium',
-        },
-      }
-
-      if (plugins.length > 0) {
-        chatRequest.plugins = plugins
       }
 
       // Execute streaming send via OpenRouter SDK
@@ -468,12 +428,16 @@ export async function runOpenRouterCheck(
       if (response && Symbol.asyncIterator in Object(response)) {
         const stream = response as AsyncIterable<any>
         for await (const chunk of stream) {
+          if (chunk.error) {
+            throw new Error(`OpenRouter stream error: ${chunk.error.message || chunk.error.code}`)
+          }
+
           const delta = chunk.choices?.[0]?.delta?.content
           if (delta) {
             accumulatedContent += delta
           }
-          
-          // Capture reasoning / thinking deltas from OpenRouter
+
+          // Capture reasoning / thinking deltas if supported by model
           const reasoningDelta =
             chunk.choices?.[0]?.delta?.reasoning ||
             chunk.choices?.[0]?.delta?.reasoning_content ||
@@ -496,7 +460,7 @@ export async function runOpenRouterCheck(
           }
         }
       } else {
-        // Non-streaming fallback object
+        // Non-streaming response
         const result = response as any
         accumulatedContent = result.choices?.[0]?.message?.content || ''
         accumulatedReasoning =
@@ -511,14 +475,13 @@ export async function runOpenRouterCheck(
 
       onProgress?.({
         stage: 'assessment',
-        message: 'Preparing structured assessment',
+        message: 'Synthesizing structured assessment',
       })
 
       const durationMs = Date.now() - startTime
       const structured = parseAndValidateResponse(
         accumulatedContent,
         candidate.model,
-        shouldSearch,
         payload.matchedClaim,
         {
           reasoningTokens,
@@ -532,10 +495,18 @@ export async function runOpenRouterCheck(
     } catch (err: any) {
       console.error(`Error attempting OpenRouter model ${candidate.model}:`, err?.message || err)
       lastError = err instanceof Error ? err : new Error(String(err))
-      // Continue to backup model if available
+
+      // Only failover to backup if error is a genuine transient condition and another candidate exists
+      const hasNextCandidate = i + 1 < candidates.length
+      if (hasNextCandidate && isTransientError(err)) {
+        console.warn(`Transient failure on ${candidate.model}. Retrying with backup model ${candidates[i + 1].model}...`)
+        continue
+      }
+
+      // Non-transient errors (auth, bad request, parse error) or exhausted candidates throw immediately
+      throw lastError
     }
   }
 
-  // If all candidate models failed
   throw lastError || new Error('NO CAP AI could not complete this check.')
 }
