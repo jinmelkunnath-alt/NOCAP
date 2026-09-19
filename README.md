@@ -1,72 +1,269 @@
-# TruthLens — Rumours, Reviewed.
+# NO CAP
 
-Social rumour network with an accountable verification desk.
+### A neutral AI-assisted platform for investigating, discussing, and triaging questionable claims.
 
-See what’s being said. Check what’s verified.
+**NO CAP** is a civic-tech misinformation triage platform designed to help people pause before believing or sharing questionable information.
 
-Home is an AI Checker. Guests are anonymous (`Guest_7F3A`). Official verification stays human.
+Instead of simply labeling something as "true" or "false", NO CAP combines **AI-assisted analysis, deterministic risk signals, claim similarity, human verification, and community feedback** into one transparent workflow.
 
-Community opinion is never the official TruthLens verdict.
+> **NO CAP checks information — not ideologies.**
 
-## Stack
+---
 
-- React + Vite + TypeScript
-- Tailwind CSS
-- Lucide React
-- React Router
+## ✦ The Problem
 
-## Scripts
+Misinformation spreads at the speed of social media.
 
-```bash
-npm install
-npm run dev
-npm run build
-npm run preview
-```
+A questionable message can move through WhatsApp, Instagram, X, Reddit, and other platforms long before a human fact-checker has time to investigate it.
 
-SPA routes (`/claim/:id`, `/courtroom/:claimId`, `/profile/:username`) rewrite to `index.html` via `vercel.json` and `netlify.toml`.
+The problem isn't only identifying misinformation.
 
-## Verification engine
+It's also:
 
-1. Risk flagging (existing Phase 3 rules)
-2. Fingerprint match against verified claims
-3. Routing:
-   - strong verified match → **Fingerprint reuse** (instant)
-   - low/medium novel → **Fast single review**
-   - high-risk novel → **Bridging verification** (Perspective A + B must agree)
+- knowing which claims deserve attention first
+- recognizing suspicious patterns
+- finding previously investigated claims
+- separating AI analysis from human verification
+- allowing disagreement without presenting popularity as truth
+- giving people context before they share
+- maintaining a transparent history of verification
 
-A/B tags are independent review roles, not political identities.
+NO CAP is designed around that workflow.
 
-Disagreement does not pick a winner. The claim stays Unverified.
+---
 
-The review ledger is append-only.
+# 🚀 What is NO CAP?
 
-## Demo desk
+NO CAP is a social verification layer for questionable claims.
 
-Switch reviewers on `/review`. Default: Reviewer Atlas (Perspective A).
+A user can:
 
-Seeded high-risk novel claim: `clm_016` (free laptops).
+1. Enter something they're unsure about.
+2. Receive an AI-assisted assessment.
+3. See observable risk signals.
+4. Discover related or previously investigated claims.
+5. Review evidence and uncertainty.
+6. Ask the community.
+7. Submit the claim for human verification.
+8. Follow the verification history.
 
-Seeded fingerprint reuse: `clm_017` (RBI variant of `clm_003`).
+The platform is designed to keep **AI assessment, community opinion, and human verification clearly separated**.
 
-## Courtroom (advisory)
+---
 
-`/courtroom/:claimId` runs a demo AI hearing from stored claim fields, Phase 3 forensics, votes, and the review ledger.
+# 🧠 Core Philosophy
 
-The AI Judge may lean true, false, misleading, or insufficient evidence. That leaning is never an official TruthLens verdict.
+### AI is an assistant, not the authority.
 
-Hearings are append-only. User-submitted evidence stays `needs-human-review`.
+NO CAP does not treat an AI response as absolute truth.
 
-## Verification shield
+AI can:
 
-Every social post shows a TruthLens Verification Shield: Unverified, Verified True, Verified False, or Misleading.
+- analyze language
+- identify risk patterns
+- compare claims
+- summarize available evidence
+- highlight uncertainty
+- assist with triage
 
-Community votes and AI courtroom leanings stay visible and separate from the official status.
+AI cannot:
 
-Honor Score is a contribution metric, not a personal truthfulness score.
+- fabricate evidence
+- fabricate sources
+- determine truth solely from popularity
+- replace human verification
+- decide political preferences
+- expose hidden reasoning as if it were factual evidence
 
-## Incident reporting
+When evidence is insufficient, NO CAP can return:
 
-Official incident reports are snapshots of **Verified False** claims only. They require demo desk-reviewer confirmation and never contact an authority.
+> **INCONCLUSIVE**
 
-Community reports on `/moderation` are separate from verification.
+That is a feature, not a failure.
+
+---
+
+# ✨ Core Features
+
+## 1. AI-First Claim Checking
+
+The homepage starts with the question:
+
+> **What rumour are you unsure about?**
+
+Users can submit a claim directly to the NO CAP AI checker.
+
+The system analyzes the claim and returns an advisory assessment containing information such as:
+
+- Classification
+- AI confidence
+- Verification status
+- Summary
+- Reason
+- Evidence
+- Counter-evidence
+- Uncertainties
+- Recommended action
+
+Possible AI classifications:
+
+- **REAL**
+- **FAKE**
+- **INCONCLUSIVE**
+
+AI confidence represents the model's confidence in its assessment.
+
+It is **not presented as a probability that a claim is true**.
+
+---
+
+## 2. Risk-Based Triage
+
+Before or alongside AI analysis, NO CAP evaluates observable risk signals.
+
+Current deterministic signals include:
+
+### Sensational language
+
+Examples include phrases such as:
+
+- "breaking"
+- "shocking"
+- "share before deleted"
+
+### Shouting
+
+Claims containing more than 50% uppercase alphabetic characters are flagged.
+
+### Unsourced
+
+Claims without a valid HTTP/HTTPS source URL are flagged.
+
+### Risk Levels
+
+| Flags | Risk |
+|---|---|
+| 0 | Low |
+| 1 | Medium |
+| 2+ | High |
+
+Risk scoring is a **triage mechanism**, not a prediction that a claim is false.
+
+---
+
+# 🔎 Claim Fingerprinting
+
+Misinformation is often reposted with slightly different wording.
+
+NO CAP uses deterministic claim normalization and similarity matching to identify potentially related submissions.
+
+A new claim can be compared against previously stored claims to identify:
+
+- potential duplicates
+- strongly similar claims
+- previously reviewed claims
+- existing verification history
+
+This helps prevent repeated work and makes it easier to recognize the same rumour as it spreads through different wording.
+
+---
+
+# 👥 Community Verification Layer
+
+NO CAP separates community opinion from official verification.
+
+Users can respond to claims using:
+
+- **REAL**
+- **FAKE**
+- **NOT SURE**
+
+Community responses represent **community sentiment**.
+
+They do not automatically determine the official verdict.
+
+This distinction is important:
+
+> **A claim being popular does not make it true.**
+
+Community interaction exists to surface disagreement, uncertainty, and additional perspectives.
+
+---
+
+# 🛡️ Human Verification
+
+AI analysis is advisory.
+
+Human verification remains the authoritative layer within the platform.
+
+Reviewers can examine an unverified claim and move it through the verification workflow:
+
+- Verified True
+- Verified False
+- Misleading
+
+Reviewers can also attach concise review notes and supporting context.
+
+The system is designed around transparent verification history rather than a single opaque prediction.
+
+---
+
+# 🌐 Public Claim Feed
+
+NO CAP provides a public social-style feed where claims can be discovered and discussed.
+
+The feed can surface:
+
+- user-submitted claims
+- AI-discovered claims
+- verification status
+- risk indicators
+- community responses
+- related claims
+- timestamps
+- categories
+
+Users can explore claims without needing to know the original submitter.
+
+---
+
+# 📄 Claim Detail
+
+Each claim has a dedicated detail view containing relevant context such as:
+
+- Full claim
+- Source platform
+- Category
+- Timestamp
+- Risk flags
+- Risk level
+- AI assessment
+- Verification status
+- Reviewer notes
+- Community responses
+- Related claims
+- Verification history
+
+The goal is to make the journey from:
+
+**"I saw this"**
+
+to:
+
+**"I understand what is known about this"**
+
+transparent.
+
+---
+
+# 🤖 AI Architecture
+
+NO CAP uses OpenRouter as the server-side AI gateway.
+
+The current architecture uses two models:
+
+### Primary
+
+```text
+Nemotron 3 Super
+nvidia/nemotron-3-super-120b-a12b:free
