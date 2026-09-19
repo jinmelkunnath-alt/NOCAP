@@ -193,7 +193,7 @@ export function ResultCard({
               <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#F5F5F5] pt-3 text-[10px] text-[#888888] font-mono">
                 <span className="flex items-center gap-1">
                   <Cpu className="h-3 w-3 text-[#EF3340]" />
-                  Engine: {assessment.meta?.modelUsed || 'NO CAP Reasoning Engine'}
+                  Engine: {assessment.meta?.modelUsed || (assessment.found ? 'Verified Ledger Cross-Reference' : 'OpenRouter AI')}
                 </span>
                 {assessment.meta?.durationMs && (
                   <span>Latency: {assessment.meta.durationMs}ms</span>
