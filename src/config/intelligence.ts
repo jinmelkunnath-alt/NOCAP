@@ -1,0 +1,90 @@
+export const RISK_WEIGHTS = {
+  Sensational: 30,
+  Shouting: 30,
+  Unsourced: 40,
+} as const
+
+export const REQUIRED_SENSATIONAL_TRIGGERS = [
+  'breaking',
+  'shocking',
+  'share before deleted',
+] as const
+
+export const EXTRA_SENSATIONAL_TRIGGERS = [
+  'urgent',
+  'must share',
+  "you won't believe",
+  'breaking news',
+] as const
+
+export const SENSATIONAL_TRIGGERS = [
+  ...REQUIRED_SENSATIONAL_TRIGGERS,
+  ...EXTRA_SENSATIONAL_TRIGGERS,
+] as const
+
+export const SIMILARITY_THRESHOLDS = {
+  potential: 0.7,
+  strong: 0.85,
+} as const
+
+export const FINGERPRINT_STOPWORDS = new Set([
+  'a',
+  'an',
+  'the',
+  'and',
+  'or',
+  'but',
+  'is',
+  'are',
+  'was',
+  'were',
+  'be',
+  'been',
+  'being',
+  'of',
+  'to',
+  'in',
+  'for',
+  'on',
+  'with',
+  'at',
+  'by',
+  'from',
+  'as',
+  'that',
+  'this',
+  'it',
+  'its',
+  'if',
+  'not',
+  'no',
+  'so',
+  'than',
+  'then',
+  'into',
+  'over',
+  'after',
+  'before',
+  'about',
+  'has',
+  'have',
+  'had',
+  'will',
+  'would',
+  'can',
+  'could',
+  'should',
+  'may',
+  'might',
+  'their',
+  'there',
+  'they',
+  'them',
+  'his',
+  'her',
+  'our',
+  'your',
+  'you',
+  'we',
+  'i',
+])
