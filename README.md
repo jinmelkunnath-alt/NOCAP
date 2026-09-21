@@ -2,13 +2,13 @@
 
 Social rumour network with an accountable verification desk and live AI assessment.
 
-See what’s being said. Check what’s verified.
+# NO CAP
 
-Home is an AI Checker. Guests are anonymous (`Guest_7F3A`). Official verification stays human.
+**Check the information. Not the ideology.**
 
 Community opinion is never the official NO CAP verdict.
 
-## Stack
+</div>
 
 - React + Vite + TypeScript
 - Tailwind CSS
