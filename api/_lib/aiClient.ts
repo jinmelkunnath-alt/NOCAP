@@ -1,7 +1,8 @@
 /**
- * TruthLens Server-Side AI Provider Client
- * Supports OpenAI-compatible endpoints (Ling 3.0, Nex AGI, Gemma, LiquidAI, OpenAI, Groq, etc.)
- * Server-only: private keys are NEVER exposed to client.
+ * NO CAP Server-Side AI Client
+ * Model: google/gemma-4-31b-it
+ * Provider: NVIDIA NIM API
+ * Server-Side Only: Private credentials never reach the browser.
  */
 
 export interface AiCheckContext {
@@ -50,188 +51,89 @@ export interface AiSynthesizeResult {
   communitySummary: string
 }
 
-export const AI_API_KEY = process.env.OPENROUTER_API_KEY || process.env.AI_API_KEY || ''
-export const AI_BASE_URL = (
-  process.env.AI_BASE_URL ||
-  (process.env.OPENROUTER_API_KEY ? 'https://openrouter.ai/api/v1' : 'https://api.openai.com/v1')
-).replace(/\/+$/, '')
-export const AI_MODEL =
-  process.env.AI_MODEL ||
-  (process.env.OPENROUTER_API_KEY
-    ? process.env.OPENROUTER_MAIN_MODEL || 'nvidia/nemotron-3-super-120b-a12b:free'
-    : 'Ling-3.0-Flash')
-export const AI_EMBEDDING_MODEL = process.env.AI_EMBEDDING_MODEL || 'LiquidAI-LFM2.5-Embedding-350M'
+export const NVIDIA_CONFIG = {
+  get apiKey(): string {
+    return (process.env.NVIDIA_API_KEY || '').trim()
+  },
+  model: 'google/gemma-4-31b-it',
+  endpoint: 'https://integrate.api.nvidia.com/v1/chat/completions',
+}
 
-const SYSTEM_PROMPT = `You are TruthLens AI, an advisory misinformation-analysis assistant.
-Your job is to analyze user rumors and claims with strict neutrality and evidentiary care.
+const SYSTEM_PROMPT = `You are NO CAP's AI assistant powered by Gemma.
+Analyze user claims with rigorous neutrality, factual accuracy, and evidentiary discipline.
 
 RULES:
-1. Analyze claims neutrally.
-2. Never infer truth from political ideology.
-3. Never invent evidence.
-4. Never invent sources or URLs.
-5. Never claim to have browsed the web unless live tools actually supplied browsing data.
-6. Never issue an official human TruthLens verdict.
-7. Treat all AI classification as advisory only.
-8. Clearly state uncertainty. If evidence is insufficient, classify as INCONCLUSIVE with lower confidence (20-45%).
-9. Explicitly distinguish AVAILABLE EVIDENCE from INSUFFICIENT EVIDENCE. If no verified evidence is supplied in context, state: "TruthLens could not establish this claim from the evidence currently available."
-10. Explanations must be concise: maximum 2 to 3 sentences.
-11. Return strictly valid JSON matching the requested structure without any markdown fencing.`
+1. Remain strictly politically neutral.
+2. Never invent evidence, sources, or URLs.
+3. Clearly communicate uncertainty.
+4. Output strictly valid JSON without preamble or markdown wrapping.`
 
-async function callChatModel(userPrompt: string, systemPromptOverride?: string): Promise<string | null> {
-  if (!AI_API_KEY) return null
+async function callNvidiaGemma(userPrompt: string, systemPromptOverride?: string): Promise<string | null> {
+  const apiKey = NVIDIA_CONFIG.apiKey
+  if (!apiKey) return null
 
-  const response = await fetch(`${AI_BASE_URL}/chat/completions`, {
+  const response = await fetch(NVIDIA_CONFIG.endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${AI_API_KEY}`,
+      Accept: 'application/json',
+      Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: AI_MODEL,
+      model: NVIDIA_CONFIG.model,
       messages: [
         { role: 'system', content: systemPromptOverride || SYSTEM_PROMPT },
         { role: 'user', content: userPrompt },
       ],
-      temperature: 0.2,
-      response_format: { type: 'json_object' },
+      temperature: 0.3,
+      max_tokens: 1024,
     }),
   })
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => '')
-    console.error(`AI API Error (${response.status}):`, errorText)
-    throw new Error(`AI API call failed with status ${response.status}`)
+    console.error(`[NO CAP AI] NVIDIA NIM API Error (${response.status}):`, errorText.slice(0, 300))
+    throw new Error(`NVIDIA API call failed with status ${response.status}`)
   }
 
   const data = (await response.json()) as any
-  return data?.choices?.[0]?.message?.content || null
+  let content = data?.choices?.[0]?.message?.content || null
+  if (content) {
+    // Strip code fences if present
+    content = content.replace(/```(?:json)?\s*([\s\S]*?)\s*```/gi, '$1').trim()
+  }
+  return content
 }
-
 
 export const aiClient = {
   isConfigured(): boolean {
-    return Boolean(AI_API_KEY)
-  },
-
-  async checkClaim(claim: string, context: AiCheckContext): Promise<AiCheckResult> {
-    const prompt = `Analyze this claim:
-Claim: "${claim}"
-Context:
-- Category: ${context.category || 'General'}
-- Platform: ${context.platform || 'Unknown'}
-- Risk Level: ${context.risk || 'Low'}
-- Risk Flags: ${(context.riskFlags || []).join(', ') || 'None'}
-- Matched TruthLens Claims: ${JSON.stringify(context.matchedClaims || [])}
-
-Required output JSON format:
-{
-  "classification": "REAL | FAKE | INCONCLUSIVE",
-  "confidence": <integer between 20 and 95>,
-  "verificationStatus": "VERIFIED | UNDER_VERIFICATION",
-  "summary": "<1 sentence summary>",
-  "reason": "<2 to 3 sentences maximum concise advisory explanation>",
-  "evidence": [],
-  "uncertainties": ["<key uncertainty or missing corroboration>"],
-  "recommendedAction": "POST_TO_COMMUNITY | VIEW_VERIFICATION | NONE"
-}`
-
-    try {
-      const raw = await callChatModel(prompt)
-      if (raw) {
-        const parsed = JSON.parse(raw)
-        return {
-          classification: ['REAL', 'FAKE', 'INCONCLUSIVE'].includes(parsed.classification)
-            ? parsed.classification
-            : 'INCONCLUSIVE',
-          confidence: typeof parsed.confidence === 'number' ? Math.max(15, Math.min(95, Math.round(parsed.confidence))) : 40,
-          verificationStatus: parsed.verificationStatus === 'VERIFIED' ? 'VERIFIED' : 'UNDER_VERIFICATION',
-          summary: String(parsed.summary || 'Advisory assessment of the submitted claim.'),
-          reason: String(parsed.reason || 'TruthLens could not establish this claim from the evidence currently available.'),
-          evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],
-          uncertainties: Array.isArray(parsed.uncertainties) ? parsed.uncertainties : [],
-          recommendedAction: ['POST_TO_COMMUNITY', 'VIEW_VERIFICATION', 'NONE'].includes(parsed.recommendedAction)
-            ? parsed.recommendedAction
-            : 'POST_TO_COMMUNITY',
-        }
-      }
-    } catch (err) {
-      console.warn('AI API call failed, using intelligent fallback:', err)
-    }
-
-    // High quality intelligent advisory fallback when API key is not set or network unavailable
-    return aiClient.fallbackCheckClaim(claim, context)
-  },
-
-  fallbackCheckClaim(claim: string, context: AiCheckContext): AiCheckResult {
-    const matched = context.matchedClaims?.[0]
-    if (matched && matched.similarity >= 0.7 && matched.verdict !== 'Unverified') {
-      const isReal = matched.verdict === 'Verified True'
-      const isFake = matched.verdict === 'Verified False'
-      const classification = isReal ? 'REAL' : isFake ? 'FAKE' : 'INCONCLUSIVE'
-      return {
-        classification,
-        confidence: isReal || isFake ? 92 : 65,
-        verificationStatus: 'VERIFIED',
-        summary: `Matches existing TruthLens human verification record (${matched.verdict}).`,
-        reason: `Existing TruthLens human verification marks this claim as ${matched.verdict.toLowerCase()} (matched record ${matched.id}, ${Math.round(matched.similarity * 100)}% similarity). The AI restates that ledger; it does not replace the official verdict.`,
-        evidence: [],
-        uncertainties: [],
-        recommendedAction: 'VIEW_VERIFICATION',
-      }
-    }
-
-    const hasHighRisk = context.risk === 'High' || (context.riskFlags && context.riskFlags.length >= 2)
-    const lower = claim.toLowerCase()
-    const isObviousScam = /(forward.*double|guaranteed.*free.*tomorrow|hack.*bank|click.*here.*claim)/i.test(lower)
-
-    if (isObviousScam) {
-      return {
-        classification: 'FAKE',
-        confidence: 84,
-        verificationStatus: 'UNDER_VERIFICATION',
-        summary: 'Matches recurring forward-to-earn or urgency-driven misinformation patterns.',
-        reason: 'The claim exhibits characteristic patterns of recurring forward-based misinformation without verifiable institutional sourcing. Stored records contain no official notice supporting this announcement.',
-        evidence: [],
-        uncertainties: ['No official institutional notification provided.'],
-        recommendedAction: 'POST_TO_COMMUNITY',
-      }
-    }
-
-    return {
-      classification: 'INCONCLUSIVE',
-      confidence: hasHighRisk ? 42 : 36,
-      verificationStatus: 'UNDER_VERIFICATION',
-      summary: 'Insufficient evidence available to establish or disprove this claim.',
-      reason: 'TruthLens could not establish this claim from the evidence currently available. Stored records contain no verified institutional corroboration for this specific statement, so it remains under verification.',
-      evidence: [],
-      uncertainties: ['Lack of primary source documentation or institutional confirmation.'],
-      recommendedAction: 'POST_TO_COMMUNITY',
-    }
+    return Boolean(NVIDIA_CONFIG.apiKey)
   },
 
   async enhanceText(originalText: string): Promise<AiEnhanceResult> {
-    const prompt = `Improve the grammar, clarity, and readability of this rumour/claim for community fact-checking.
+    const prompt = `Improve the grammar, clarity, and readability of this rumour/claim for fact-checking.
 RULES:
 - Improve grammar and syntax.
 - Preserve the user's exact original meaning.
-- DO NOT add facts, evidence, or external claims.
+- DO NOT add external facts, evidence, or bias.
 - DO NOT make the claim stronger or weaker.
-- DO NOT change the user's intent.
-- Return JSON: { "enhancedText": "..." }
+- Return ONLY valid JSON: { "enhancedText": "..." }
 
 Original text: "${originalText}"`
 
     try {
-      const raw = await callChatModel(prompt)
+      const raw = await callNvidiaGemma(prompt)
       if (raw) {
-        const parsed = JSON.parse(raw)
+        const firstBrace = raw.indexOf('{')
+        const lastBrace = raw.lastIndexOf('}')
+        const jsonStr = firstBrace !== -1 && lastBrace !== -1 ? raw.substring(firstBrace, lastBrace + 1) : raw
+        const parsed = JSON.parse(jsonStr)
         if (parsed?.enhancedText && typeof parsed.enhancedText === 'string') {
           return { enhancedText: parsed.enhancedText.trim() }
         }
       }
     } catch (err) {
-      console.warn('AI Enhance API failed, falling back to heuristic enhancer:', err)
+      console.warn('[NO CAP AI] Enhance with Gemma failed, using deterministic formatter:', err)
     }
 
     return { enhancedText: aiClient.fallbackEnhanceText(originalText) }
@@ -243,13 +145,8 @@ Original text: "${originalText}"`
     if (cleaned.length > 0) {
       cleaned = cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
     }
-    // common grammar fixes for demo
-    cleaned = cleaned.replace(/\blpu\b/gi, 'LPU')
     cleaned = cleaned.replace(/\brbi\b/gi, 'RBI')
     cleaned = cleaned.replace(/\bwho\b/g, 'WHO')
-    cleaned = cleaned.replace(/\s+getting\s+/gi, ' are receiving ')
-    cleaned = cleaned.replace(/\s+giving\s+/gi, ' is distributing ')
-    cleaned = cleaned.replace(/\s+laptop\b/gi, ' laptops')
     if (!/[.?!]$/.test(cleaned)) {
       cleaned += '.'
     }
@@ -269,7 +166,7 @@ RULES:
 - Community majority does NOT equal truth! Explicitly state that consensus alone does not establish factual truth.
 - Summarize supporting arguments, counterarguments, and key uncertainties.
 - Keep the summary to 2-3 sentences.
-- Output JSON format:
+- Output ONLY valid JSON:
 {
   "classification": "REAL | FAKE | INCONCLUSIVE",
   "confidence": <integer 20-85>,
@@ -280,9 +177,12 @@ RULES:
 }`
 
     try {
-      const raw = await callChatModel(prompt)
+      const raw = await callNvidiaGemma(prompt)
       if (raw) {
-        const parsed = JSON.parse(raw)
+        const firstBrace = raw.indexOf('{')
+        const lastBrace = raw.lastIndexOf('}')
+        const jsonStr = firstBrace !== -1 && lastBrace !== -1 ? raw.substring(firstBrace, lastBrace + 1) : raw
+        const parsed = JSON.parse(jsonStr)
         return {
           classification: ['REAL', 'FAKE', 'INCONCLUSIVE'].includes(parsed.classification)
             ? parsed.classification
@@ -295,7 +195,7 @@ RULES:
         }
       }
     } catch (err) {
-      console.warn('AI Synthesize API failed, falling back to heuristic synthesis:', err)
+      console.warn('[NO CAP AI] Synthesize with Gemma failed, using heuristic synthesis:', err)
     }
 
     return aiClient.fallbackSynthesize(input)
@@ -334,7 +234,7 @@ RULES:
       ? 'Most community responses currently lean in one direction, but community consensus alone does not establish factual truth. '
       : 'Community sentiment is divided. '
 
-    const communitySummary = `${majorityNotice}${commentsCount} contributor statement(s) and ${totalVotes} vote(s) were analyzed. Stored evidence remains advisory until an official TruthLens review is locked.`
+    const communitySummary = `${majorityNotice}${commentsCount} contributor statement(s) and ${totalVotes} vote(s) were analyzed. Stored evidence remains advisory until an official review is locked.`
 
     return {
       classification,
@@ -347,8 +247,6 @@ RULES:
   },
 
   async calculateSimilarity(text: string, candidates: string[]): Promise<Array<{ text: string; similarity: number; percent: number }>> {
-    // If embedding API is available, we could fetch embeddings.
-    // For fast reliable hackathon execution, compute normalized token Jaccard / Cosine similarity:
     return candidates.map((candidate) => {
       const sim = calculateTokenSimilarity(text, candidate)
       return {

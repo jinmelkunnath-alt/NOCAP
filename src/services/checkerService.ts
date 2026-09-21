@@ -1,6 +1,5 @@
 import { CHECKER_CONFIG } from '../config/checker'
 import type { Category, Platform, RumourCheck, AiAssessment } from '../types'
-import { buildAiAssessment } from '../utils/aiAssessment'
 import { enhanceClaimText, stripQuestionWrapper } from '../utils/enhanceText'
 import { fingerprintClaim } from '../utils/fingerprint'
 import { createId } from '../utils/format'
@@ -13,13 +12,23 @@ import { riskService } from './riskService'
 import { sessionService } from './sessionService'
 import { storageService } from './storageService'
 
-const CACHE_TTL_MS = 15 * 60 * 1000 // 15 minutes TTL for demo cache
+const CACHE_TTL_MS = 15 * 60 * 1000 // 15 minutes TTL
 const CACHE_PREFIX = 'truthlens_ai_cache_'
 
+export type CheckerErrorType = 'NOT_CONFIGURED' | 'AUTH_ERROR' | 'PARSE_ERROR' | 'UNAVAILABLE'
+
+export class CheckerError extends Error {
+  errorType: CheckerErrorType
+  constructor(message: string, errorType: CheckerErrorType) {
+    super(message)
+    this.name = 'CheckerError'
+    this.errorType = errorType
+  }
+}
+
 export interface CheckerProgressEvent {
-  stage: 'understanding' | 'signals' | 'evidence' | 'web_search' | 'reasoning' | 'assessment'
+  stage: 'understanding' | 'signals' | 'evidence' | 'reasoning' | 'assessment'
   message: string
-  usedWebSearch?: boolean
   thinkingChunk?: string
   accumulatedThinking?: string
 }
@@ -36,6 +45,18 @@ function normalizeForCache(text: string): string {
   return stripQuestionWrapper(text).toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
+function isLegacyCannedCheck(check: RumourCheck): boolean {
+  const why = check.result?.why || ''
+  const model = check.result?.meta?.modelUsed || ''
+  if (check.result?.aiConfidence === 36 && why.includes('NO CAP did not find a stored rumour')) {
+    return true
+  }
+  if (why.includes('AI analysis temporarily busy') && !model) {
+    return true
+  }
+  return false
+}
+
 function readAiCache(text: string, userId: string): RumourCheck | null {
   try {
     const key = `${CACHE_PREFIX}${userId}_${hashString(normalizeForCache(text))}`
@@ -43,7 +64,9 @@ function readAiCache(text: string, userId: string): RumourCheck | null {
     if (!raw) return null
     const parsed = JSON.parse(raw)
     if (Date.now() - parsed.timestamp < CACHE_TTL_MS) {
-      return parsed.check
+      if (parsed.check && !isLegacyCannedCheck(parsed.check)) {
+        return parsed.check
+      }
     }
     localStorage.removeItem(key)
   } catch {
@@ -53,6 +76,7 @@ function readAiCache(text: string, userId: string): RumourCheck | null {
 }
 
 function writeAiCache(text: string, userId: string, check: RumourCheck): void {
+  if (isLegacyCannedCheck(check)) return
   try {
     const key = `${CACHE_PREFIX}${userId}_${hashString(normalizeForCache(text))}`
     localStorage.setItem(
@@ -104,11 +128,16 @@ export const checkerService = {
 
   inferCategory,
 
+  getCached(text: string): RumourCheck | null {
+    const userId = sessionService.getCurrentUserId()
+    return readAiCache(text, userId)
+  },
+
   recentChecks(limit = 4): RumourCheck[] {
     const userId = sessionService.getCurrentUserId()
     return checkStorage
       .getChecks()
-      .filter((item) => item.userId === userId)
+      .filter((item) => item.userId === userId && !isLegacyCannedCheck(item))
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
       .slice(0, limit)
   },
@@ -121,23 +150,7 @@ export const checkerService = {
     if (trimmed.length < 8) throw new Error('Enter a rumour or question of at least 8 characters.')
     const userId = sessionService.getCurrentUserId()
 
-    // 1. Check local session storage & short TTL cache
-    const cached = readAiCache(trimmed, userId)
-    if (cached) {
-      await discoveryService.considerCluster(trimmed)
-      return cached
-    }
-
-    const prior = checkStorage
-      .getChecks()
-      .find((item) => item.userId === userId && item.originalText === trimmed)
-    if (prior) {
-      await discoveryService.considerCluster(trimmed)
-      writeAiCache(trimmed, userId, prior)
-      return prior
-    }
-
-    // 2. Run deterministic risk analysis & fingerprint matching
+    // 1. Run deterministic risk analysis & fingerprint matching
     onProgress?.({
       stage: 'understanding',
       message: 'Understanding the claim and context',
@@ -161,186 +174,147 @@ export const checkerService = {
 
     let result: AiAssessment
 
-    // 3. RESOLUTION HIERARCHY RULE: Existing human verified record CANNOT be overridden by AI
-    if (matchedClaim && matchedClaim.verdict !== 'Unverified') {
-      const isTrue = matchedClaim.verdict === 'Verified True'
-      const isFalse = matchedClaim.verdict === 'Verified False'
-      result = {
-        label: isTrue ? 'REAL' : isFalse ? 'FAKE' : 'INCONCLUSIVE',
-        verification: 'VERIFIED',
-        found: true,
-        aiConfidence: isTrue || isFalse ? 94 : 65,
-        why: `Existing NO CAP human verification marks this claim as ${matchedClaim.verdict.toLowerCase()} (matched record ${matchedClaim.id}, ${usable!.percent}% similarity). The AI restates that ledger; it does not replace the official verdict.`,
-        matchedClaimId: matchedClaim.id,
-        similarityPercent: usable!.percent,
-        evidenceNote: matchedClaim.evidence.length > 0
-          ? `${matchedClaim.evidence.length} stored evidence item(s) on verified record.`
-          : 'Human fact-checking record on file.',
-        evidence: matchedClaim.evidence.map((e) => `${e.title}: ${e.description}`),
-        usedWebSearch: false,
+    // 2. Call server-side AI endpoint with SSE streaming support
+    const payload = {
+      claim: trimmed,
+      sourceUrl: null,
+      platform: 'Other',
+      category: inferCategory(trimmed),
+      riskAnalysis: {
         riskLevel: analysis.riskLevel,
         riskScore: analysis.riskScore,
-        riskFlags: analysis.flags,
-      }
-    } else {
-      // 4. Call server-side OpenRouter streaming endpoint with SSE support
-      const payload = {
-        claim: trimmed,
-        sourceUrl: null,
-        platform: 'Other',
-        category: inferCategory(trimmed),
-        riskAnalysis: {
-          riskLevel: analysis.riskLevel,
-          riskScore: analysis.riskScore,
-          flags: analysis.flags,
-          explanation: analysis.explanation,
+        flags: analysis.flags,
+        explanation: analysis.explanation,
+      },
+      matchedClaim: matchedClaim
+        ? {
+            id: matchedClaim.id,
+            verdict: matchedClaim.verdict,
+            similarity: usable!.similarity,
+            text: matchedClaim.text,
+            evidence: matchedClaim.evidence,
+          }
+        : null,
+    }
+
+      const response = await fetch('/api/ai/check', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream, application/json',
         },
-        matchedClaim: matchedClaim
-          ? {
-              id: matchedClaim.id,
-              verdict: matchedClaim.verdict,
-              similarity: usable!.similarity,
-              text: matchedClaim.text,
-              evidence: matchedClaim.evidence,
-            }
-          : null,
+        body: JSON.stringify(payload),
+      })
+
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => ({}))
+        const errorType: CheckerErrorType =
+          errBody.errorType || (response.status === 422 ? 'PARSE_ERROR' : response.status === 401 ? 'AUTH_ERROR' : 'UNAVAILABLE')
+        throw new CheckerError(errBody.error || `AI endpoint returned HTTP ${response.status}`, errorType)
       }
 
-      try {
-        const response = await fetch('/api/ai/check', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'text/event-stream, application/json',
-          },
-          body: JSON.stringify(payload),
-        })
+      const contentType = response.headers.get('content-type') || ''
 
-        if (!response.ok) {
-          const errBody = await response.json().catch(() => ({}))
-          throw new Error(errBody.error || `AI endpoint returned HTTP ${response.status}`)
-        }
+      if (contentType.includes('text/event-stream') && response.body) {
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        let finalData: any = null
 
-        const contentType = response.headers.get('content-type') || ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
 
-        if (contentType.includes('text/event-stream') && response.body) {
-          const reader = response.body.getReader()
-          const decoder = new TextDecoder()
-          let buffer = ''
-          let finalData: any = null
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
 
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-
-            buffer += decoder.decode(value, { stream: true })
-            const lines = buffer.split('\n')
-            buffer = lines.pop() || ''
-
-            let currentEvent = 'message'
-            for (const line of lines) {
-              if (line.startsWith('event:')) {
-                currentEvent = line.replace('event:', '').trim()
-              } else if (line.startsWith('data:')) {
-                const dataStr = line.replace('data:', '').trim()
-                if (dataStr) {
-                  try {
-                    const data = JSON.parse(dataStr)
-                    if (currentEvent === 'progress') {
-                      onProgress?.(data)
-                    } else if (currentEvent === 'result') {
-                      finalData = data
-                    } else if (currentEvent === 'error') {
-                      throw new Error(data.message || 'Verification failed')
-                    }
-                  } catch (parseErr) {
-                    if (currentEvent === 'error') throw parseErr
+          let currentEvent = 'message'
+          for (const line of lines) {
+            if (line.startsWith('event:')) {
+              currentEvent = line.replace('event:', '').trim()
+            } else if (line.startsWith('data:')) {
+              const dataStr = line.replace('data:', '').trim()
+              if (dataStr) {
+                try {
+                  const data = JSON.parse(dataStr)
+                  if (currentEvent === 'progress') {
+                    onProgress?.(data)
+                  } else if (currentEvent === 'result') {
+                    finalData = data
+                  } else if (currentEvent === 'error') {
+                    const errType: CheckerErrorType = data.errorType || 'UNAVAILABLE'
+                    throw new CheckerError(data.message || 'AI verification failed', errType)
                   }
+                } catch (parseErr) {
+                  if (parseErr instanceof CheckerError) throw parseErr
+                  if (currentEvent === 'error') throw parseErr
                 }
               }
             }
           }
-
-          if (!finalData) {
-            throw new Error('Did not receive final structured result from stream')
-          }
-
-          result = {
-            label: finalData.classification || 'INCONCLUSIVE',
-            verification: finalData.verificationStatus === 'VERIFIED' ? 'VERIFIED' : 'UNDER VERIFICATION',
-            found: isUsableMatch,
-            aiConfidence: finalData.confidence || 50,
-            why: finalData.reason || finalData.summary || 'NO CAP analyzed the claim and evidence signals.',
-            matchedClaimId: matchedClaim?.id ?? null,
-            similarityPercent: usable ? usable.percent : null,
-            evidenceNote: finalData.usedWebSearch
-              ? `${finalData.sources?.length || 0} live source(s) checked.`
-              : isUsableMatch
-                ? `${matchedClaim?.evidence.length ?? 0} stored evidence item(s) on file.`
-                : 'Advisory analysis based on verifiable signals.',
-            summary: finalData.summary,
-            evidence: finalData.evidence,
-            counterEvidence: finalData.counterEvidence,
-            uncertainties: finalData.uncertainties,
-            sources: finalData.sources,
-            recommendedAction: finalData.recommendedAction,
-            needsHumanReview: finalData.needsHumanReview,
-            usedWebSearch: finalData.usedWebSearch,
-            riskLevel: analysis.riskLevel,
-            riskScore: analysis.riskScore,
-            riskFlags: analysis.flags,
-            reasoningText: finalData.reasoningText || finalData.reason || finalData.summary,
-            thinking: finalData.reasoningText || finalData.reason,
-            meta: finalData.meta,
-          }
-        } else {
-          // Standard JSON response
-          const data = await response.json()
-          result = {
-            label: data.classification || 'INCONCLUSIVE',
-            verification: data.verificationStatus === 'VERIFIED' ? 'VERIFIED' : 'UNDER VERIFICATION',
-            found: isUsableMatch,
-            aiConfidence: typeof data.confidence === 'number' ? data.confidence : 50,
-            why: data.reason || data.summary || 'NO CAP could not establish this claim from the evidence currently available.',
-            matchedClaimId: matchedClaim?.id ?? null,
-            similarityPercent: usable ? usable.percent : null,
-            evidenceNote: data.usedWebSearch
-              ? `${data.sources?.length || 0} live source(s) checked.`
-              : isUsableMatch
-                ? `${matchedClaim?.evidence.length ?? 0} stored evidence item(s) on file.`
-                : 'Advisory analysis based on verifiable signals.',
-            summary: data.summary,
-            evidence: data.evidence,
-            counterEvidence: data.counterEvidence,
-            uncertainties: data.uncertainties,
-            sources: data.sources,
-            recommendedAction: data.recommendedAction,
-            needsHumanReview: data.needsHumanReview,
-            usedWebSearch: data.usedWebSearch,
-            riskLevel: analysis.riskLevel,
-            riskScore: analysis.riskScore,
-            riskFlags: analysis.flags,
-            reasoningText: data.reasoningText || data.reason || data.summary,
-            thinking: data.reasoningText || data.reason,
-            meta: data.meta,
-          }
         }
-      } catch (err) {
-        console.warn('AI check endpoint error, using graceful local fallback:', err)
-        const localFallback = buildAiAssessment(analysis, isUsableMatch ? usable : null)
-        const isNotConfigured = String(err).includes('not configured')
+
+        if (!finalData) {
+          throw new CheckerError('Did not receive structured verification assessment from AI engine.', 'PARSE_ERROR')
+        }
+
         result = {
-          ...localFallback,
-          why: isNotConfigured
-            ? localFallback.why
-            : 'AI analysis temporarily busy. ' + localFallback.why,
+          label: finalData.classification || 'INCONCLUSIVE',
+          verification: finalData.verificationStatus === 'VERIFIED' ? 'VERIFIED' : 'UNDER VERIFICATION',
+          found: isUsableMatch,
+          aiConfidence: typeof finalData.confidence === 'number' ? finalData.confidence : 50,
+          why: finalData.reason || finalData.summary || 'NO CAP analyzed the claim and evidence signals.',
+          matchedClaimId: matchedClaim?.id ?? null,
+          similarityPercent: usable ? usable.percent : null,
+          evidenceNote: isUsableMatch
+            ? `${matchedClaim?.evidence.length ?? 0} stored evidence item(s) on file.`
+            : 'Advisory analysis based on verifiable signals.',
+          summary: finalData.summary,
+          evidence: finalData.evidence,
+          counterEvidence: finalData.counterEvidence,
+          uncertainties: finalData.uncertainties,
+          sources: finalData.sources,
+          recommendedAction: finalData.recommendedAction,
+          needsHumanReview: finalData.needsHumanReview,
+          usedWebSearch: false,
           riskLevel: analysis.riskLevel,
           riskScore: analysis.riskScore,
           riskFlags: analysis.flags,
+          reasoningText: finalData.reasoningText || finalData.reason || finalData.summary,
+          thinking: finalData.reasoningText || finalData.reason,
+          meta: finalData.meta,
+        }
+      } else {
+        // Standard JSON response
+        const data = await response.json()
+        result = {
+          label: data.classification || 'INCONCLUSIVE',
+          verification: data.verificationStatus === 'VERIFIED' ? 'VERIFIED' : 'UNDER VERIFICATION',
+          found: isUsableMatch,
+          aiConfidence: typeof data.confidence === 'number' ? data.confidence : 50,
+          why: data.reason || data.summary || 'NO CAP analyzed the claim and evidence signals.',
+          matchedClaimId: matchedClaim?.id ?? null,
+          similarityPercent: usable ? usable.percent : null,
+          evidenceNote: isUsableMatch
+            ? `${matchedClaim?.evidence.length ?? 0} stored evidence item(s) on file.`
+            : 'Advisory analysis based on verifiable signals.',
+          summary: data.summary,
+          evidence: data.evidence,
+          counterEvidence: data.counterEvidence,
+          uncertainties: data.uncertainties,
+          sources: data.sources,
+          recommendedAction: data.recommendedAction,
+          needsHumanReview: data.needsHumanReview,
           usedWebSearch: false,
+          riskLevel: analysis.riskLevel,
+          riskScore: analysis.riskScore,
+          riskFlags: analysis.flags,
+          reasoningText: data.reasoningText || data.reason || data.summary,
+          thinking: data.reasoningText || data.reason,
+          meta: data.meta,
         }
       }
-    }
 
     const record: RumourCheck = {
       id: createId('chk'),
@@ -353,7 +327,7 @@ export const checkerService = {
       result,
     }
 
-    checkStorage.saveChecks([record, ...checkStorage.getChecks()])
+    checkStorage.saveChecks([record, ...checkStorage.getChecks().filter((c) => !isLegacyCannedCheck(c))])
     writeAiCache(trimmed, userId, record)
     await discoveryService.considerCluster(trimmed)
     emitSocialChanged()
