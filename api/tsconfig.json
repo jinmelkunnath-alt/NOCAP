@@ -1,4 +1,13 @@
 {
-  "extends": "../tsconfig.api.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "skipLibCheck": true,
+    "noEmit": true,
+    "strict": false
+  },
   "include": ["**/*.ts"]
 }

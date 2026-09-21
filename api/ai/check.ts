@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { runNvidiaGemmaCheck, type CheckClaimPayload } from '../_lib/nvidiaGemma'
+import { runNvidiaGemmaCheck, type CheckClaimPayload } from '../_lib/nvidiaGemma.js'
 
 async function parseBody(req: IncomingMessage): Promise<any> {
   if ((req as any).body) return (req as any).body
@@ -140,8 +140,14 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         sendEvent('result', result)
         res.end()
       } catch (checkErr: any) {
-        const { userMessage, errorType } = normalizeErrorMessage(checkErr)
-        sendEvent('error', { message: userMessage, errorType })
+        const { userMessage, errorType, status } = normalizeErrorMessage(checkErr)
+        sendEvent('error', {
+          ok: false,
+          error: userMessage,
+          message: userMessage,
+          errorType,
+          details: { code: errorType, message: userMessage, status },
+        })
         res.end()
       }
     } else {
@@ -156,7 +162,15 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     if (!res.headersSent) {
       res.statusCode = status
       res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ error: userMessage, errorType }))
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error: userMessage,
+          message: userMessage,
+          errorType,
+          details: { code: errorType, message: userMessage, status },
+        }),
+      )
     }
   }
 }

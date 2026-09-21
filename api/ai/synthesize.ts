@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { aiClient } from '../_lib/aiClient'
+import { aiClient } from '../_lib/aiClient.js'
 
 async function parseBody(req: IncomingMessage): Promise<any> {
   if ((req as any).body) return (req as any).body

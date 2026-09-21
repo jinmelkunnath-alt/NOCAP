@@ -15,7 +15,12 @@ import {
 } from 'lucide-react'
 import { PostComposer } from '../components/checker/PostComposer'
 import { ResultCard } from '../components/checker/ResultCard'
-import { checkerService, CheckerError, type CheckerErrorType } from '../services/checkerService'
+import {
+  checkerService,
+  CheckerError,
+  extractSafeErrorMessage,
+  type CheckerErrorType,
+} from '../services/checkerService'
 import type { RumourCheck } from '../types'
 import { cn } from '../utils/cn'
 
@@ -87,9 +92,10 @@ export function CheckerHomePage() {
     } catch (err: any) {
       setCheck(null)
       const errType: CheckerErrorType = err instanceof CheckerError ? err.errorType : 'UNAVAILABLE'
+      const safeMessage = extractSafeErrorMessage(err, 'NO CAP AI is currently unavailable.')
       setErrorState({
         type: errType,
-        message: err?.message || 'NO CAP AI is currently unavailable.',
+        message: safeMessage,
       })
     } finally {
       setBusy(false)
@@ -403,7 +409,7 @@ export function CheckerHomePage() {
                 Live AI Verification Unavailable
               </h2>
               <p className="mt-2 text-sm text-[#4B5563] leading-relaxed">
-                {errorState.message}
+                {extractSafeErrorMessage(errorState.message, 'NO CAP AI is currently unavailable.')}
               </p>
               <div className="mt-4 rounded-xl border border-[#EAEAEA] bg-[#FAFAFA] p-4 text-xs text-[#667085] leading-relaxed">
                 <strong>Honest Misinformation Triage:</strong> NO CAP never fabricates a canned or synthetic verification score when the AI model cannot be reached. You can retry the automated check, or post the claim to the community for human verification.
@@ -456,7 +462,7 @@ export function CheckerHomePage() {
                 AI Output Could Not Be Structured
               </h2>
               <p className="mt-2 text-sm text-[#4B5563] leading-relaxed">
-                {errorState.message}
+                {extractSafeErrorMessage(errorState.message, 'The AI model response could not be parsed as valid verification data.')}
               </p>
               <div className="mt-4 rounded-xl border border-[#EAEAEA] bg-[#FAFAFA] p-4 text-xs text-[#667085] leading-relaxed">
                 <strong>Integrity Guarantee:</strong> The model responded, but its output could not be strictly validated as valid verification JSON. NO CAP does not synthesize mock conclusions when formatting fails.

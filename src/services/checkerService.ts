@@ -17,10 +17,46 @@ const CACHE_PREFIX = 'truthlens_ai_cache_'
 
 export type CheckerErrorType = 'NOT_CONFIGURED' | 'AUTH_ERROR' | 'PARSE_ERROR' | 'UNAVAILABLE'
 
+export function extractSafeErrorMessage(data: any, fallback = 'NO CAP AI is currently unavailable.'): string {
+  if (!data) return fallback
+  if (typeof data === 'string' && data.trim() && data.trim() !== '[object Object]') {
+    return data.trim()
+  }
+  if (data instanceof Error && data.message && data.message !== '[object Object]') {
+    return data.message.trim()
+  }
+  if (typeof data.message === 'string' && data.message.trim() && data.message !== '[object Object]') {
+    return data.message.trim()
+  }
+  if (typeof data.error === 'string' && data.error.trim() && data.error !== '[object Object]') {
+    return data.error.trim()
+  }
+  if (data.error && typeof data.error === 'object') {
+    if (typeof data.error.message === 'string' && data.error.message.trim() && data.error.message !== '[object Object]') {
+      return data.error.message.trim()
+    }
+    if (typeof data.error.detail === 'string' && data.error.detail.trim()) {
+      return data.error.detail.trim()
+    }
+  }
+  if (data.details && typeof data.details === 'object') {
+    if (typeof data.details.message === 'string' && data.details.message.trim() && data.details.message !== '[object Object]') {
+      return data.details.message.trim()
+    }
+  }
+  if (typeof data.detail === 'string' && data.detail.trim()) {
+    return data.detail.trim()
+  }
+  if (typeof data.title === 'string' && data.title.trim()) {
+    return data.title.trim()
+  }
+  return fallback
+}
+
 export class CheckerError extends Error {
   errorType: CheckerErrorType
   constructor(message: string, errorType: CheckerErrorType) {
-    super(message)
+    super(extractSafeErrorMessage(message))
     this.name = 'CheckerError'
     this.errorType = errorType
   }
@@ -210,7 +246,8 @@ export const checkerService = {
         const errBody = await response.json().catch(() => ({}))
         const errorType: CheckerErrorType =
           errBody.errorType || (response.status === 422 ? 'PARSE_ERROR' : response.status === 401 ? 'AUTH_ERROR' : 'UNAVAILABLE')
-        throw new CheckerError(errBody.error || `AI endpoint returned HTTP ${response.status}`, errorType)
+        const safeMessage = extractSafeErrorMessage(errBody, `AI endpoint returned HTTP ${response.status}`)
+        throw new CheckerError(safeMessage, errorType)
       }
 
       const contentType = response.headers.get('content-type') || ''
@@ -244,7 +281,8 @@ export const checkerService = {
                     finalData = data
                   } else if (currentEvent === 'error') {
                     const errType: CheckerErrorType = data.errorType || 'UNAVAILABLE'
-                    throw new CheckerError(data.message || 'AI verification failed', errType)
+                    const safeMessage = extractSafeErrorMessage(data, 'AI verification failed')
+                    throw new CheckerError(safeMessage, errType)
                   }
                 } catch (parseErr) {
                   if (parseErr instanceof CheckerError) throw parseErr
