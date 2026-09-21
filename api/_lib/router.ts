@@ -1,8 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import checkHandler from '../ai/check.ts'
-import enhanceHandler from '../ai/enhance.ts'
-import synthesizeHandler from '../ai/synthesize.ts'
-import similarityHandler from '../ai/similarity.ts'
+import checkHandler from '../ai/check'
+import enhanceHandler from '../ai/enhance'
+import synthesizeHandler from '../ai/synthesize'
+import similarityHandler from '../ai/similarity'
 
 export async function routeAiRequest(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
   const url = req.url?.split('?')[0] || ''

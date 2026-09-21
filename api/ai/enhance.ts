@@ -1,11 +1,11 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { aiClient } from '../_lib/aiClient.ts'
+import { aiClient } from '../_lib/aiClient'
 
 async function parseBody(req: IncomingMessage): Promise<any> {
   if ((req as any).body) return (req as any).body
   return new Promise((resolve) => {
     let data = ''
-    req.on('data', (chunk) => {
+    req.on('data', (chunk: Buffer | string) => {
       data += chunk
     })
     req.on('end', () => {

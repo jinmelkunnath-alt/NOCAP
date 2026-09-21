@@ -1,11 +1,11 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { runNvidiaGemmaCheck, type CheckClaimPayload } from '../_lib/nvidiaGemma.ts'
+import { runNvidiaGemmaCheck, type CheckClaimPayload } from '../_lib/nvidiaGemma'
 
 async function parseBody(req: IncomingMessage): Promise<any> {
   if ((req as any).body) return (req as any).body
   return new Promise((resolve) => {
     let data = ''
-    req.on('data', (chunk) => {
+    req.on('data', (chunk: Buffer | string) => {
       data += chunk
     })
     req.on('end', () => {
@@ -133,7 +133,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       }
 
       try {
-        const result = await runNvidiaGemmaCheck(payload, (progress) => {
+        const result = await runNvidiaGemmaCheck(payload, (progress: any) => {
           sendEvent('progress', progress)
         })
 
